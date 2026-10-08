@@ -634,12 +634,13 @@ extension Terminal {
                 return (nil, "EINVAL: bad payload")
             }
             return (payload, nil)
-        case "f":
-            return loadKittyFilePayload(control: control, base64Payload: base64Payload, temporary: false)
-        case "t":
-            return loadKittyFilePayload(control: control, base64Payload: base64Payload, temporary: true)
-        case "s":
-            return loadKittySharedMemoryPayload(control: control, base64Payload: base64Payload)
+        case "f", "t", "s":
+            // A file, a temporary file and a shared memory object are named on the
+            // terminal's own machine. The program can be on the far side of a network
+            // connection, so none of them is read, deleted or unlinked, and the answer
+            // does not depend on the payload. Upstream main refuses these by default
+            // with the same message (143d306, c906d84).
+            return (nil, "EINVAL: unsupported medium")
         default:
             return (nil, "ENOTSUP: unsupported transmission")
         }

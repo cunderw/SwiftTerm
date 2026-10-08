@@ -16,6 +16,15 @@ final class KittyTransmissionTests {
         HeadlessTerminal(queue: SwiftTermTests.queue, options: TerminalOptions(cols: 10, rows: 5)) { _ in }
     }
 
+    /// Records what the terminal answers, so a test can read the reply to a transmit.
+    private final class Replies: TerminalDelegate {
+        private(set) var bytes: [UInt8] = []
+        func send(source: Terminal, data: ArraySlice<UInt8>) { bytes.append(contentsOf: data) }
+        var text: String { String(decoding: bytes, as: UTF8.self) }
+    }
+
+    private static let unsupportedMedium = "\u{1b}_Gi=1;EINVAL: unsupported medium\u{1b}\\"
+
     private func sendKitty(terminal: Terminal, control: String, payload: Data) {
         let base64 = payload.base64EncodedString()
         let sequence = "\u{1b}_G\(control);\(base64)\u{1b}\\"
@@ -92,7 +101,7 @@ final class KittyTransmissionTests {
         #expect(FileManager.default.fileExists(atPath: fileURL.path))
     }
 
-    @Test func testKittyTemporaryFileDeleted() throws {
+    @Test func testKittyTemporaryFileRefusedAndNotDeleted() throws {
         let h = makeHeadlessTerminal()
         let t = h.terminal!
         let dir = try makeTempDir()
@@ -105,8 +114,8 @@ final class KittyTransmissionTests {
                   control: "f=24,s=1,v=1,t=t,i=1",
                   payload: Data(fileURL.path.utf8))
 
-        #expect(t.kittyGraphicsState.imagesById[1] != nil)
-        #expect(!FileManager.default.fileExists(atPath: fileURL.path))
+        #expect(t.kittyGraphicsState.imagesById[1] == nil)
+        #expect(FileManager.default.fileExists(atPath: fileURL.path))
     }
 
     @Test func testKittyFileSymlinkBlockedByRealPath() throws {
@@ -137,7 +146,7 @@ final class KittyTransmissionTests {
         #expect(t.kittyGraphicsState.imagesById[1] == nil)
     }
 
-    @Test func testKittyFileOffsetAndSize() throws {
+    @Test func testKittyFileOffsetAndSizeRefused() throws {
         let h = makeHeadlessTerminal()
         let t = h.terminal!
         let dir = try makeTempDir()
@@ -151,21 +160,10 @@ final class KittyTransmissionTests {
                   control: "f=24,s=1,v=1,t=f,i=1,O=3,S=3",
                   payload: Data(fileURL.path.utf8))
 
-        guard let image = t.kittyGraphicsState.imagesById[1] else {
-            Issue.record("image not loaded")
-            return
-        }
-        switch image.payload {
-        case .rgba(let bytes, let width, let height):
-            #expect(width == 1)
-            #expect(height == 1)
-            #expect(bytes == [40, 50, 60, 255])
-        case .png:
-            Issue.record("unexpected png payload")
-        }
+        #expect(t.kittyGraphicsState.imagesById[1] == nil)
     }
 
-    @Test func testKittyPngFileLoad() throws {
+    @Test func testKittyPngFileRefused() throws {
         let h = makeHeadlessTerminal()
         let t = h.terminal!
         let dir = try makeTempDir()
@@ -178,15 +176,26 @@ final class KittyTransmissionTests {
                   control: "f=100,t=f,i=1",
                   payload: Data(fileURL.path.utf8))
 
-        guard let image = t.kittyGraphicsState.imagesById[1] else {
-            Issue.record("image not loaded")
-            return
-        }
-        switch image.payload {
-        case .png:
-            break
-        case .rgba:
-            Issue.record("expected png payload")
+        #expect(t.kittyGraphicsState.imagesById[1] == nil)
+    }
+
+    /// The answer to `t=f` is the same for a file that exists and one that does not, so
+    /// the program cannot learn which paths are present on the terminal's machine.
+    @Test func testKittyFileReplyDoesNotDependOnThePath() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let present = dir.appendingPathComponent("present.data")
+        try Data([1, 2, 3]).write(to: present)
+        let absent = dir.appendingPathComponent("absent.data")
+
+        for url in [present, absent] {
+            let replies = Replies()
+            let t = Terminal(delegate: replies, options: TerminalOptions(cols: 10, rows: 5))
+            sendKitty(terminal: t,
+                      control: "f=24,s=1,v=1,t=f,i=1",
+                      payload: Data(url.path.utf8))
+            #expect(replies.text == Self.unsupportedMedium)
         }
     }
 
@@ -203,7 +212,7 @@ final class KittyTransmissionTests {
     }
 
     @Test(.enabled(if: KittyTransmissionTests.sharedMemoryAvailable()))
-    func testKittySharedMemoryLoad() throws {
+    func testKittySharedMemoryRefusedAndNotUnlinked() throws {
         let h = makeHeadlessTerminal()
         let t = h.terminal!
 
@@ -220,10 +229,11 @@ final class KittyTransmissionTests {
                   control: "f=24,s=1,v=1,t=s,i=1",
                   payload: Data(name.utf8))
 
-        #expect(t.kittyGraphicsState.imagesById[1] != nil)
+        #expect(t.kittyGraphicsState.imagesById[1] == nil)
 
         let reopen = name.withCString { KittyTransmissionTests.swiftShmOpen($0, O_RDONLY, 0) }
-        #expect(reopen < 0)
+        #expect(reopen >= 0)
+        if reopen >= 0 { close(reopen) }
     }
 
     @Test(.enabled(if: KittyTransmissionTests.sharedMemoryAvailable()))
